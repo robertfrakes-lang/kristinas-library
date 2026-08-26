@@ -51,7 +51,10 @@
         .book-card { flex: 0 0 160px; background: var(--card-bg); border-radius: 6px; padding: 12px; text-align: center; cursor: pointer; box-shadow: 0 6px 15px rgba(0,0,0,0.06); transition: 0.3s; display: flex; flex-direction: column; justify-content: space-between; position: relative; }
         .book-card:hover { transform: translateY(-8px); box-shadow: 0 12px 20px rgba(0,0,0,0.12); }
 
-        .book-cover-placeholder { width: 130px; height: 195px; margin: 0 auto 15px auto; border-radius: 2px; box-shadow: 3px 3px 8px rgba(0,0,0,0.15); display: flex; align-items: center; justify-content: center; color: white; font-family: 'Playfair Display', serif; font-size: 0.9em; padding: 10px; box-sizing: border-box; background-image: linear-gradient(120deg, #8D6E63 0%, #6D4C41 100%); border-left: 4px solid #5D4037; }
+        .cover-wrapper { width: 130px; height: 195px; margin: 0 auto 15px auto; position: relative; display: flex; justify-content: center; align-items: center; }
+        .shelf-cover-img { width: 100%; height: 100%; object-fit: cover; border-radius: 2px; box-shadow: 3px 3px 8px rgba(0,0,0,0.15); display: block; }
+        .book-cover-placeholder { width: 100%; height: 100%; margin: 0; border-radius: 2px; box-shadow: 3px 3px 8px rgba(0,0,0,0.15); display: flex; align-items: center; justify-content: center; color: white; font-family: 'Playfair Display', serif; font-size: 0.9em; padding: 10px; box-sizing: border-box; background-image: linear-gradient(120deg, #8D6E63 0%, #6D4C41 100%); border-left: 4px solid #5D4037; }
+        
         .book-title { font-family: 'Playfair Display', serif; font-size: 1.05em; font-weight: 700; line-height: 1.2; margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
         .book-author { font-size: 0.8em; color: var(--accent-color); font-weight: 400; font-style: italic; }
 
@@ -147,7 +150,7 @@
         <button class="close-btn" onclick="closeModal()">×</button>
         <div class="modal-left">
             <img id="modalCover" class="modal-cover" src="" alt="Book Cover" style="display:none;">
-            <div id="modalCoverPlaceholder" class="book-cover-placeholder" style="width: 200px; height: 300px; font-size: 1.3em;"></div>
+            <div id="modalCoverPlaceholder" class="book-cover-placeholder" style="width: 200px; height: 300px; font-size: 1.3em; display:flex;"></div>
         </div>
         <div class="modal-right">
             <h2 id="modalTitle" class="modal-title">Title</h2>
@@ -212,7 +215,6 @@
         });
     }
 
-    // Generate specific ribbons based on Format column
     function getFormatRibbon(formatStr) {
         if(!formatStr) return '';
         let f = String(formatStr).toLowerCase();
@@ -222,7 +224,6 @@
         return '';
     }
 
-    // Check if added in last 60 days
     function getNewBadge(dateAdded) {
         if(!dateAdded) return '';
         const added = new Date(dateAdded);
@@ -232,16 +233,35 @@
         return '';
     }
 
-    // Build standard Book Card HTML
+    // Build standard Book Card HTML with Open Library Image Fetching
     function buildCardHTML(book) {
         const safeData = encodeURIComponent(JSON.stringify(book));
         const ribbon = getFormatRibbon(book.Format || book.Platform);
         const newBadge = getNewBadge(book['Date Added']);
+        const isbn = book.Barcode || book.ISBN || "";
+        
+        let coverHTML = `<div class="book-cover-placeholder">${book.Title || "Untitled"}</div>`;
+        
+        // If a barcode exists, try to fetch the image from Open Library. 
+        // If it fails (or returns their 1x1 blank pixel), it falls back to the CSS placeholder automatically!
+        if (isbn && isbn.toString().length >= 9) {
+            coverHTML = `
+                <img src="https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg" 
+                     class="shelf-cover-img" 
+                     alt="Cover" 
+                     onload="if(this.naturalWidth <= 1) { this.style.display='none'; this.nextElementSibling.style.display='flex'; }"
+                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+                <div class="book-cover-placeholder" style="display:none;">${book.Title || "Untitled"}</div>
+            `;
+        }
+
         return `
             <div class="book-card" onclick="openDetails('${safeData}')">
                 ${newBadge}
                 ${ribbon}
-                <div class="book-cover-placeholder">${book.Title || "Untitled"}</div>
+                <div class="cover-wrapper">
+                    ${coverHTML}
+                </div>
                 <div>
                     <div class="book-title">${book.Title || "Untitled"}</div>
                     <div class="book-author">${book.Author || "Unknown"}</div>
@@ -281,10 +301,8 @@
                         String(book.Genre || "").toLowerCase().includes(term));
             });
 
-            // Hide Just Arrived if searching/sorting
             document.getElementById('justArrivedContainer').style.display = (term === "" && sortMethod === "default") ? "block" : "none";
 
-            // Apply Sorting
             if (sortMethod !== 'default') {
                 filtered.sort((a, b) => {
                     if (sortMethod === 'z-a') return String(b.Title).localeCompare(String(a.Title));
@@ -300,7 +318,6 @@
         }, 300);
     }
 
-    // Render A-Z (Default)
     function renderAZ(dataToRender) {
         const container = document.getElementById('libraryContainer');
         container.innerHTML = '';
@@ -327,7 +344,6 @@
         });
     }
 
-    // Render Flat (When sorted chronologically or Z-A)
     function renderFlat(dataToRender) {
         const container = document.getElementById('libraryContainer');
         if (dataToRender.length === 0) { container.innerHTML = '<div style="text-align:center; padding: 50px; opacity: 0.5;">No books found.</div>'; return; }
@@ -338,7 +354,6 @@
         container.innerHTML = shelfHTML;
     }
 
-    // 4. "Surprise Me" Logic
     function rollSurprise() {
         if(masterData.length === 0) return;
         const randomBook = masterData[Math.floor(Math.random() * masterData.length)];
@@ -350,7 +365,6 @@
     async function openDetails(encodedBook) {
         const book = JSON.parse(decodeURIComponent(encodedBook));
         
-        // Populate standard Data
         document.getElementById('modalTitle').innerText = book.Title || "Untitled";
         document.getElementById('modalAuthor').innerText = book.Author || "Unknown Author";
         document.getElementById('modalFormat').innerText = book.Format || book.Platform || "Physical Copy";
@@ -364,7 +378,6 @@
         document.getElementById('modalPublisher').innerText = book.Publisher || "Searching...";
         document.getElementById('modalSynopsis').innerText = "Consulting the archives...";
         
-        // Reset Image
         document.getElementById('modalCover').style.display = 'none';
         document.getElementById('modalCover').src = '';
         const placeholder = document.getElementById('modalCoverPlaceholder');
@@ -374,7 +387,6 @@
         document.getElementById('detailsModal').style.display = 'flex';
         buildRecommendations(book);
 
-        // Fetch Rich Metadata from Google Books API
         try {
             let query = (isbn && isbn.length >= 10) ? `isbn:${isbn}` : `intitle:${encodeURIComponent(book.Title)}+inauthor:${encodeURIComponent(book.Author)}`;
             const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${query}`);
@@ -400,7 +412,7 @@
         }
     }
 
-    // 6. Recommendation Engine ("If You Liked This...")
+    // 6. Recommendation Engine
     function buildRecommendations(currentBook) {
         const container = document.getElementById('recsContainer');
         container.innerHTML = '';
@@ -412,7 +424,6 @@
             (author && b.Author === author) || (genre && b.Genre === genre)
         ));
         
-        // Shuffle and pick 3
         recs = recs.sort(() => 0.5 - Math.random()).slice(0, 3);
         
         if (recs.length > 0) {
@@ -433,7 +444,7 @@
 
     function closeModal() { document.getElementById('detailsModal').style.display = 'none'; }
 
-    // 7. Librarian's Ledger Dashboard
+    // 7. Librarian's Ledger
     function openLedger() {
         if(masterData.length === 0) return;
         
@@ -451,7 +462,6 @@
             if(b.Genre) genreCounts[b.Genre] = (genreCounts[b.Genre] || 0) + 1;
         });
 
-        // Top Stats
         document.getElementById('ledgerStats').innerHTML = `
             <div class="stat-card"><div class="meta-label">Total Books</div><div class="stat-num">${masterData.length}</div></div>
             <div class="stat-card"><div class="meta-label">Hardcovers</div><div class="stat-num">${hc}</div></div>
@@ -459,7 +469,6 @@
             <div class="stat-card"><div class="meta-label">Digital / Audio</div><div class="stat-num">${dg}</div></div>
         `;
 
-        // Lists
         const sortedAuthors = Object.entries(authorCounts).sort((a,b) => b[1] - a[1]).slice(0, 10);
         document.getElementById('ledgerAuthors').innerHTML = sortedAuthors.map(([name, count]) => `<div class="list-row"><span>${name}</span><span class="list-count">${count}</span></div>`).join('');
 

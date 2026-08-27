@@ -48,8 +48,8 @@
         .book-card { flex: 0 0 160px; background: var(--card-bg); border-radius: 6px; padding: 12px; text-align: center; cursor: pointer; box-shadow: 0 6px 15px rgba(0,0,0,0.06); transition: 0.3s; display: flex; flex-direction: column; justify-content: space-between; position: relative; }
         .book-card:hover { transform: translateY(-8px); box-shadow: 0 12px 20px rgba(0,0,0,0.12); }
 
-        .cover-wrapper { width: 130px; height: 195px; margin: 0 auto 15px auto; position: relative; display: flex; justify-content: center; align-items: center; }
-        .shelf-cover-img { width: 100%; height: 100%; object-fit: cover; border-radius: 2px; box-shadow: 3px 3px 8px rgba(0,0,0,0.15); display: block; }
+        .cover-wrapper { width: 130px; height: 195px; margin: 0 auto 15px auto; position: relative; display: flex; justify-content: center; align-items: center; background-color: var(--accent-color); border-radius: 2px; }
+        .shelf-cover-img { width: 100%; height: 100%; object-fit: cover; border-radius: 2px; box-shadow: 3px 3px 8px rgba(0,0,0,0.15); display: none; }
         .book-cover-placeholder { width: 100%; height: 100%; margin: 0; border-radius: 2px; box-shadow: 3px 3px 8px rgba(0,0,0,0.15); display: flex; align-items: center; justify-content: center; color: white; font-family: 'Playfair Display', serif; font-size: 0.9em; padding: 10px; box-sizing: border-box; background-image: linear-gradient(120deg, #8D6E63 0%, #6D4C41 100%); border-left: 4px solid #5D4037; }
         
         .book-title { font-family: 'Playfair Display', serif; font-size: 1.05em; font-weight: 700; line-height: 1.2; margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
@@ -189,6 +189,34 @@
     let masterData = [];
     let searchTimeout;
 
+    // --- NEW: API THROTTLE QUEUE ---
+    const apiQueue = [];
+    let isProcessingQueue = false;
+
+    // Process the queue with a strict 1.5-second delay to bypass 429 Quota Exceeded errors
+    async function processQueue() {
+        if (isProcessingQueue || apiQueue.length === 0) return;
+        isProcessingQueue = true;
+
+        while (apiQueue.length > 0) {
+            const task = apiQueue.shift();
+            try {
+                await task();
+            } catch (err) {
+                console.error("Queue task failed:", err);
+            }
+            // Strict 1.5 second throttle between API calls
+            await new Promise(resolve => setTimeout(resolve, 1500));
+        }
+        isProcessingQueue = false;
+    }
+
+    function addToQueue(task) {
+        apiQueue.push(task);
+        processQueue();
+    }
+    // --------------------------------
+
     document.addEventListener('DOMContentLoaded', () => { syncLibrary(); });
 
     function syncLibrary() {
@@ -223,31 +251,19 @@
         return '';
     }
 
+    // NEW: Card builder using a data attribute for lazy loading
     function buildCardHTML(book) {
         const safeData = encodeURIComponent(JSON.stringify(book));
         const ribbon = getFormatRibbon(book.Format || book.Platform);
         const newBadge = getNewBadge(book['Date Added']);
-        const isbn = String(book.Barcode || book.ISBN || "").replace(/[^0-9X]/gi, ''); // Clean ISBN
         
-        let coverHTML = `<div class="book-cover-placeholder">${book.Title || "Untitled"}</div>`;
-        
-        if (isbn && isbn.length >= 9) {
-            coverHTML = `
-                <img src="https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg" 
-                     class="shelf-cover-img" 
-                     alt="Cover" 
-                     onload="if(this.naturalWidth <= 1) { this.style.display='none'; this.nextElementSibling.style.display='flex'; }"
-                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
-                <div class="book-cover-placeholder" style="display:none;">${book.Title || "Untitled"}</div>
-            `;
-        }
-
         return `
             <div class="book-card" onclick="openDetails('${safeData}')">
                 ${newBadge}
                 ${ribbon}
-                <div class="cover-wrapper">
-                    ${coverHTML}
+                <div class="cover-wrapper" data-book='${safeData}'>
+                    <img class="shelf-cover-img" src="" alt="Cover" />
+                    <div class="book-cover-placeholder">${book.Title || "Untitled"}</div>
                 </div>
                 <div>
                     <div class="book-title">${book.Title || "Untitled"}</div>
@@ -255,6 +271,49 @@
                 </div>
             </div>
         `;
+    }
+
+    // NEW: Intersection Observer to only load covers when they are visible on screen
+    function observeCovers() {
+        const observer = new IntersectionObserver((entries, obs) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    const wrapper = entry.target;
+                    const bookData = JSON.parse(decodeURIComponent(wrapper.getAttribute('data-book')));
+                    
+                    // Add the fetch task to the throttled queue
+                    addToQueue(async () => {
+                        const cleanTitle = encodeURIComponent(String(bookData.Title).split('(')[0].trim());
+                        const cleanAuthor = encodeURIComponent(String(bookData.Author).trim());
+                        
+                        try {
+                            const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=intitle:${cleanTitle}+inauthor:${cleanAuthor}`);
+                            const apiData = await res.json();
+                            
+                            if (apiData.items && apiData.items.length > 0) {
+                                const imgLinks = apiData.items[0].volumeInfo.imageLinks;
+                                if (imgLinks && imgLinks.thumbnail) {
+                                    const imgEl = wrapper.querySelector('.shelf-cover-img');
+                                    const placeholder = wrapper.querySelector('.book-cover-placeholder');
+                                    
+                                    imgEl.src = imgLinks.thumbnail.replace('http:', 'https:').replace('&edge=curl', '');
+                                    imgEl.onload = () => {
+                                        imgEl.style.display = 'block';
+                                        placeholder.style.display = 'none';
+                                    };
+                                }
+                            }
+                        } catch (err) {
+                            console.error("Cover fetch failed silently:", err);
+                        }
+                    });
+                    
+                    obs.unobserve(wrapper); // Stop observing once queued
+                }
+            });
+        }, { rootMargin: '100px' }); // Start loading slightly before it scrolls into view
+
+        document.querySelectorAll('.cover-wrapper').forEach(el => observer.observe(el));
     }
 
     function renderJustArrived(data) {
@@ -271,6 +330,7 @@
         topRecent.forEach(book => html += buildCardHTML(book));
         html += `</div>`;
         container.innerHTML = html;
+        observeCovers();
     }
 
     function handleSearch() {
@@ -327,6 +387,8 @@
             shelfHTML += `</div>`;
             container.innerHTML += shelfHTML;
         });
+        
+        observeCovers();
     }
 
     function renderFlat(dataToRender) {
@@ -337,6 +399,8 @@
         dataToRender.forEach(book => shelfHTML += buildCardHTML(book));
         shelfHTML += `</div>`;
         container.innerHTML = shelfHTML;
+        
+        observeCovers();
     }
 
     function rollSurprise() {
@@ -346,7 +410,7 @@
         openDetails(safeData);
     }
 
-    // THE UPDATED "SMART FALLBACK" API FETCH
+    // THE "SMART FALLBACK" API FETCH (Now queue-friendly)
     async function openDetails(encodedBook) {
         const book = JSON.parse(decodeURIComponent(encodedBook));
         
@@ -372,19 +436,18 @@
         document.getElementById('detailsModal').style.display = 'flex';
         buildRecommendations(book);
 
+        // Instantly bypass queue if clicking for details to ensure UI responsiveness
         try {
             let apiData = null;
-            let cleanIsbn = String(isbnRaw).replace(/[^0-9X]/gi, ''); // Remove spaces/dashes
+            let cleanIsbn = String(isbnRaw).replace(/[^0-9X]/gi, ''); 
 
-            // STEP 1: Attempt Exact Barcode Match
             if (cleanIsbn && cleanIsbn.length >= 9) {
                 const res1 = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${cleanIsbn}`);
                 apiData = await res1.json();
             }
 
-            // STEP 2: Smart Fallback (If Barcode fails, search by Title + Author)
             if (!apiData || !apiData.items || apiData.items.length === 0) {
-                const cleanTitle = encodeURIComponent(String(book.Title).split('(')[0].trim()); // Remove stuff in parentheses
+                const cleanTitle = encodeURIComponent(String(book.Title).split('(')[0].trim()); 
                 const cleanAuthor = encodeURIComponent(String(book.Author).trim());
                 
                 let textQuery = `intitle:${cleanTitle}`;
@@ -394,7 +457,6 @@
                 apiData = await res2.json();
             }
 
-            // STEP 3: Paint the Details
             if (apiData && apiData.items && apiData.items.length > 0) {
                 const volumeInfo = apiData.items[0].volumeInfo;
                 
@@ -408,7 +470,6 @@
                 if (volumeInfo.description) {
                     document.getElementById('modalSynopsis').innerHTML = volumeInfo.description;
                 } else if (apiData.items[0].searchInfo && apiData.items[0].searchInfo.textSnippet) {
-                    // Fallback to the short snippet if full description is missing
                     document.getElementById('modalSynopsis').innerHTML = apiData.items[0].searchInfo.textSnippet;
                 } else {
                     document.getElementById('modalSynopsis').innerText = "No detailed synopsis found in the archive.";
